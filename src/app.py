@@ -1,34 +1,22 @@
+import base64
+import io
+import time
+
 import dash
 from dash import dcc
 from dash import html
 from dash.dependencies import Input, Output, State
 
-import time
 import pandas as pd
+
+import dash_components as drc
+
 
 app = dash.Dash(__name__)
 
 app.layout = html.Div([
-    dcc.Upload(
-        id='upload-data',
-        children=html.Div([
-            'Upload SQL File (*.sql, *.pg)'
-            # 'Drag and Drop or ',
-            # html.A('Select Files')
-        ]),
-        style={
-            'width': '100%',
-            'height': '60px',
-            'lineHeight': '60px',
-            'borderWidth': '1px',
-            'borderStyle': 'dashed',
-            'borderRadius': '5px',
-            'textAlign': 'center',
-            'margin': '10px'
-        },
-        multiple=False
-    ),
-    html.Div(id='output-data-upload'),
+    drc.UploadText(id='upload-data'),
+    drc.html_div(id='output-data-upload'),
     
     html.Div([
         html.Label('Select a table:'),
@@ -53,25 +41,51 @@ app.layout = html.Div([
     html.Div(id='loading-output-1')
 ])
 
-def process_data(contents):
+def parse_contents(contents, filename):
+    
     # Placeholder function to simulate data processing
-    time.sleep(5)
-    df = pd.read_csv(contents)
-    return df
+    _, content_string = contents.split(',')
+    decoded = base64.b64decode(content_string)
+    try:
+        if 'sql' in filename:
+            # Assume that the user uploaded a CSV file
+            df = pd.read_csv(
+                io.StringIO(content_string))
+        elif 'sql' in filename:
+            # Assume that the user uploaded an excel file
+            df = pd.read_excel(io.BytesIO(decoded))
+        print(df.head())
+        return df
+
+    except Exception as e:
+        print('Error: ' + e)
+        return html.Div([
+            'There was an error processing this file.'
+        ])
+
+# @app.callback(Output('output-data-upload', 'children'),
+#               Input('upload-data', 'contents'),
+#               State('upload-data', 'filename'))
+# def update_output(contents, filename):
+#     if contents is not None:
+#         # Simulate file processing
+#         df = parse_contents(contents, filename)
+#         return html.Div([
+#             html.Div('File "{}" has been uploaded and processed.'.format(filename)),
+#             dcc.Loading(id="loading-1", children=[html.Div(id='loading-output-1')], type="default"),
+#         ])
+#     else:
+#         return html.Div('Please upload a file.')
 
 @app.callback(Output('output-data-upload', 'children'),
               Input('upload-data', 'contents'),
-              State('upload-data', 'filename'))
-def update_output(contents, filename):
-    if contents is not None:
-        # Simulate file processing
-        #df = process_data(contents)
-        return html.Div([
-            html.Div('File "{}" has been uploaded and processed.'.format(filename)),
-            dcc.Loading(id="loading-1", children=[html.Div(id='loading-output-1')], type="default"),
-        ])
-    else:
-        return html.Div('Please upload a file.')
+              State('upload-data', 'filename'),
+              State('upload-data', 'last_modified'))
+def update_output(list_of_contents, list_of_names, list_of_dates):
+    if list_of_contents is not None:
+        children = [
+            parse_contents(list_of_contents, list_of_names)]
+        return children
 
 @app.callback(Output('loading-output-1', 'children'),
               Input('upload-data', 'contents'))
