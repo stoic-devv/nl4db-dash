@@ -10,12 +10,15 @@ from dash.dependencies import Input, Output, State
 import logging
 
 import utils.dash_components as drc
+from widgets.correlation import correlation_heatmap
+from utils.pandas_sql import get_df_from_tablename
 from utils.process_sql import create_app_db, del_app_db, execute_sql_stream, get_tables_from_app_db
 
 logging.basicConfig(filename='app.log', level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s')
 app = dash.Dash(__name__)
 
-app.layout = html.Div([
+def user_input():
+    return [# Upload area
     drc.UploadText(id='upload-data'),
     #drc.html_div(id='output-data-upload'),
     
@@ -36,8 +39,33 @@ app.layout = html.Div([
         ),
         html.Button('Submit', id='submit-button', disabled=True)
     ], style={'display': 'inline-block', 'margin': '10px'}),
-    html.Div(id='output-form'),
-    html.Div(id='loading-output-1'),
+    html.Div(id='loading-output-1')]
+
+app.layout = html.Div(
+    id="app-container",
+    children=[
+
+    # Banner
+        html.Div(
+            id="banner",
+            className="banner",
+            children=[html.Img(src=app.get_asset_url("plotly_logo.png"))],
+        ),
+    
+    # Left column
+        html.Div(
+            id="left-column",
+            className="four columns",
+            children=user_input()
+    ),
+    # Right column
+        html.Div(
+            id="right-column",
+            className="eight columns",
+            # children=[
+            #     html.Div(id='output-form')
+            # ]
+        ),
     dcc.Store(id='sql_processing_state')
 ])
 
@@ -70,16 +98,14 @@ def populate_tables_selector(is_processed):
     if is_processed:
         tables = get_tables_from_app_db()
         return [{'label': x, 'value':x} for x in tables], False
-    print(is_processed)
     return tables, True
 
 # uploads file and execute sql
 @app.callback(Output('loading-output-1', 'children'),
               Output('sql_processing_state', 'data'),
               Input('upload-data', 'contents'),
-              State('upload-data', 'filename'),
-              State('upload-data', 'last_modified'))
-def update_output(list_of_contents, list_of_names, list_of_dates):
+              State('upload-data', 'filename'))
+def update_output(list_of_contents, list_of_names):
     # backend processing
     if list_of_contents is not None:
         children = [
@@ -106,16 +132,24 @@ def enable_form(is_processed):
     else:
         return True, True
 
-@app.callback(Output('output-form', 'children'),
+@app.callback(Output('right-column', 'children'),
               Input('submit-button', 'n_clicks'),
               State('table-selector', 'value'),
               State('attribute-input', 'value'))
-def submit_form(n_clicks, table_name, attribute_name):
+def submit_form(n_clicks, table_names, attribute_name):
     if n_clicks is not None:
-        # Placeholder function to simulate form submission
-        return html.Div('Form submitted with table "{}" and attribute "{}".'.format(table_name, attribute_name))
+        return [generate_correlation_heatmap(table_names, attribute_name)]
     else:
         return html.Div('')
+
+def generate_correlation_heatmap(table_names, attr):
+    tables = [get_df_from_tablename(table) for table in table_names]
+    return dcc.Graph(
+        id='correlation-heatmap',
+        figure= correlation_heatmap(tables, attr),
+        style={'width': '90vh', 'height': '90vh'}
+    )
+
 
 if __name__ == '__main__':
 
@@ -126,6 +160,6 @@ if __name__ == '__main__':
         app.run_server(debug=True, port=8050)
     except Exception as e:
         # handle the exception
-        print(e)
+        logging.error(e)
     finally:
         del_app_db()
