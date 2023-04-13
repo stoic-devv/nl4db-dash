@@ -56,10 +56,14 @@ def create_app_db():
 
 def del_app_db():
     if app_db_present():
-        conn = _get_app_db_conn_(dbname=DEFAULT_DB_NAME)
-        conn.autocommit=True
-        _execute_sql_(sql=f'DROP DATABASE {APP_DB_NAME};', conn=conn)
-
+        try:
+            logging.info('Deleting App database')
+            conn = _get_app_db_conn_(dbname=DEFAULT_DB_NAME)
+            conn.autocommit=True
+            _execute_sql_(sql=f'DROP DATABASE {APP_DB_NAME};', conn=conn)
+        except Exception as e:
+            logging.error(e)
+    logging.info('App database deleted')
 
 def execute_sql_file(sql_file, db_name, db_user, db_password, db_host, db_port):
     # Open the SQL file and read its contents
