@@ -1,21 +1,32 @@
 import base64
-import io
-import time
 
 import dash
 from dash import dcc
 from dash import html
 from dash.dependencies import Input, Output, State
+import dash_cytoscape as cyto
+import dash_mantine_components as dmc
+
+import pandas as pd
 
 import logging
 
 import utils.dash_components as drc
-from widgets.correlation import correlation_heatmap
-from utils.pandas_sql import get_df_from_tablename
+from utils.pandas_sql import get_df_from_tablename, get_table_columns
 from utils.process_sql import create_app_db, del_app_db, execute_sql_stream, get_tables_from_app_db
 
+from widgets.correlation import correlation_heatmap
+from widgets.association_rules import get_multi_ar
+
+import warnings
+
 logging.basicConfig(filename='app.log', level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s')
+warnings.filterwarnings('ignore', category=UserWarning)
+
+
 app = dash.Dash(__name__)
+app.logger.propagate = True
+app.logger.setLevel(logging.DEBUG)
 
 def user_input():
     return [# Upload area
@@ -23,19 +34,15 @@ def user_input():
     #drc.html_div(id='output-data-upload'),
     
     html.Div([
-        html.Label('Select a table:'),
-        dcc.Dropdown(
+        dmc.MultiSelect(
                 id="table-selector",
-                # options=[{"label": i, "value": i} for i in admit_list],
-                # value=admit_list[:],
-                multi=True,
+                label="Select table(s)"
             ),
-        html.Label('Enter a sensitive attribute:'),
-        dcc.Input(
-            id='attribute-input',
-            type='text',
-            placeholder='Sensitive attribute',
-            disabled=True
+        dmc.MultiSelect(
+            label = "Sensitive Attribute",
+            id="sensitive-attr",
+            placeholder="Select Sensitive/Protected Attributes",
+            style={"width": 400, "marginBottom": 10}
         ),
         html.Button('Submit', id='submit-button', disabled=True)
     ], style={'display': 'inline-block', 'margin': '10px'}),
@@ -49,7 +56,7 @@ app.layout = html.Div(
         html.Div(
             id="banner",
             className="banner",
-            children=[html.Img(src=app.get_asset_url("plotly_logo.png"))],
+            children=[html.Img(src=app.get_asset_url("uic-circmark-black.PNG"), style={'height': '50px', 'width': '50px'})],
         ),
     
     # Left column
@@ -66,7 +73,8 @@ app.layout = html.Div(
             #     html.Div(id='output-form')
             # ]
         ),
-    dcc.Store(id='sql_processing_state')
+    dcc.Store(id='sql_processing_state'),
+    dcc.Store(id='selected_table_dfs')
 ])
 
 def parse_contents(contents, filename):
@@ -90,7 +98,8 @@ def parse_contents(contents, filename):
             'There was an error processing this file.'
         ])
 
-@app.callback(Output('table-selector', 'options'),
+# populates table selection dropdown with tables from the schema
+@app.callback(Output('table-selector', 'data'),
               Output('table-selector', 'disabled'),
               Input('sql_processing_state', 'data'))
 def populate_tables_selector(is_processed):
@@ -105,7 +114,7 @@ def populate_tables_selector(is_processed):
               Output('sql_processing_state', 'data'),
               Input('upload-data', 'contents'),
               State('upload-data', 'filename'))
-def update_output(list_of_contents, list_of_names):
+def process_sql_file(list_of_contents, list_of_names):
     # backend processing
     if list_of_contents is not None:
         children = [
@@ -113,17 +122,45 @@ def update_output(list_of_contents, list_of_names):
         return children, True
     return [], False
 
-# # 
-# @app.callback(Output('output-data-upload', 'children'),
-#               Input('upload-data', 'contents'))
-# def update_output(contents):
-#     if contents is not None:
 
-#         return html.Div('Processing completed.')
-#     else:
-#         return html.Div('')
+@app.callback(Output('sensitive-attr', 'data'),
+              Input('selected_table_dfs', 'data'))
+def populate_attrs(table_dicts):
+    # https://community.plotly.com/t/dropdown-sub-category-list/65593
+    data = []
+    
+    # tables not selected
+    if not table_dicts:
+        return []
 
-@app.callback(Output('attribute-input', 'disabled'),
+    for name,dat in table_dicts.items():
+        df = pd.DataFrame.from_records(dat)
+        for col in df.columns:
+            data.append({"value":col, "label": col, "group": name})
+    """
+        data=[
+                {"value": "sub-1", "label": "Sub Category 1", "group": "Main Category"},
+                {"value": "sub-3", "label": "Sub Category 3",  "group": "Secondary Category"},
+                {"value": "sub-2", "label": "Sub Category 2", "group": "Main Category"},
+                {"value": "sub-4", "label": "Sub Category 4", "group": "Secondary Category"},
+            ],
+    """
+
+    return data
+
+# stores the selected tables as dataframes available as shared data for components
+@app.callback(Output('selected_table_dfs', 'data'),
+              Input('selected_table_dfs', 'data'),
+              Input('table-selector', 'value'))
+def store_selected_tables_as_df(table_dicts, table_names):
+    if table_names:
+        #app.logger.info(table_names)
+        table_dicts.update({table_names[-1]: 
+        get_df_from_tablename(table_names[-1]).to_dict('records')})
+        return table_dicts
+    return {}
+
+@app.callback(Output('sensitive-attr', 'disabled'),
               Output('submit-button', 'disabled'),
               Input('sql_processing_state', 'data'))
 def enable_form(is_processed):
@@ -134,21 +171,33 @@ def enable_form(is_processed):
 
 @app.callback(Output('right-column', 'children'),
               Input('submit-button', 'n_clicks'),
-              State('table-selector', 'value'),
-              State('attribute-input', 'value'))
-def submit_form(n_clicks, table_names, attribute_name):
+              Input('selected_table_dfs', 'data'),
+              State('sensitive-attr', 'value'))
+def submit_form(n_clicks, selected_tables_dict, sensitive_attr):
     if n_clicks is not None:
-        return [generate_correlation_heatmap(table_names, attribute_name)]
+        return [generate_correlation_heatmap(selected_tables_dict, sensitive_attr),
+        generate_association_rules(selected_tables_dict, sensitive_attr)]
     else:
         return html.Div('')
 
-def generate_correlation_heatmap(table_names, attr):
-    tables = [get_df_from_tablename(table) for table in table_names]
+# ToDo: current implementation only for one sensitive attr
+def generate_correlation_heatmap(tables_dict, attr):
+    tables = [pd.DataFrame.from_records(v) for _,v in tables_dict.items()]
+    app.logger.info(attr[-1])
     return dcc.Graph(
         id='correlation-heatmap',
-        figure= correlation_heatmap(tables, attr),
-        style={'width': '90vh', 'height': '90vh'}
+        figure= correlation_heatmap(tables, attr[-1]),
+        style={'width': '600px', 'height': '500px'}
     )
+
+# ToDo: get for all selected tables
+def generate_association_rules(tables_dict, attr):
+    tables = [pd.DataFrame.from_records(v) for k,v in tables_dict.items()]
+    return html.Div([cyto.Cytoscape(
+        id='cytoscape',
+        elements=get_multi_ar(tables[0]),
+        style={'width': '400px', 'height': '500px'}
+    )])
 
 
 if __name__ == '__main__':
@@ -160,6 +209,6 @@ if __name__ == '__main__':
         app.run_server(debug=True, port=8050)
     except Exception as e:
         # handle the exception
-        logging.error(e)
+        app.logger.error(e)
     finally:
         del_app_db()
